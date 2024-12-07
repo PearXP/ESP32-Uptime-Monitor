@@ -1,0 +1,556 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ESPAsyncWebServer.h>
+#include "time.h"
+#include <EEPROM.h>
+#include <Update.h>
+
+
+char default_ssid[32] = "hotspot123321";         //Replace with your SSID. This will your default SSID.
+char default_password[32] = "pw123456";        //Replace with your WiFi-password. This will your default WiFi-password.
+char serverName[64] = "http://localhost";   //Replace with your URL to be checked.
+char ssid[32];
+char password[32];
+char weburl[64];
+int gmtparam;
+const char* ntpServer = "pool.ntp.org";
+long  gmtOffset_sec;               
+const int   daylightOffset_sec = 0;                 //Replace with your daylight offset (seconds)
+char default_discord_webhook_url[128] = "0";
+char discord_webhook_url[128];
+char default_ntfy[128] = "0";
+char ntfy_url[128];
+
+const char* serverIndex = R"(
+<form method='POST' action='/update' enctype='multipart/form-data' id='upload_form'>
+  <h2>Firmware Update</h2> <!-- Firmware Update -->
+  <p>pls download the latest version at https://github.com/PearXP/esp32-web-server-status</p> <!-- Beschreibung hinzugefügt -->
+  <input type='file' name='update' id='file' onchange='sub(this)' style='display:none'>
+  <label id='file-input' for='file'>Choose file...</label>
+  <input type='submit' class='btn' value='Update'>
+  <br><br>
+  <div id='prg'></div>
+  <br>
+  <div id='prgbar'><div id='bar'></div></div>
+</form>
+<script>
+  function sub(obj) {
+    var fileName = obj.value.split('\\\\').pop();
+    document.getElementById('file-input').innerHTML = fileName;
+  }
+  document.getElementById('upload_form').onsubmit = function(e) {
+    e.preventDefault();
+    var form = document.getElementById('upload_form');
+    var data = new FormData(form);
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '/updatefirmware', true);
+    xhr.upload.onprogress = function(evt) {
+      if (evt.lengthComputable) {
+        var per = evt.loaded / evt.total;
+        document.getElementById('prg').innerHTML = 'progress: ' + Math.round(per*100) + '%';
+        document.getElementById('bar').style.width = Math.round(per*100) + '%';
+      }
+    };
+    xhr.send(data);
+  };
+</script>
+<style>
+  #file-input, input { width: 100%; height: 44px; border-radius: 4px; margin: 10px auto; font-size: 15px; }
+  input { background: #FFA500; border: 0; padding: 0 15px; }
+  input:hover { background-color: #FF8C00; }
+  body { background: #3498db; font-family: sans-serif; font-size: 14px; color: #777; }
+  #file-input { padding: 0; border: 1px solid #ddd; line-height: 44px; text-align: left; display: block; cursor: pointer; }
+  #bar, #prgbar { background-color: #f1f1f1; border-radius: 10px; }
+  #bar { background-color: #3498db; width: 0%; height: 10px; }
+  form { background: #fff; max-width: 258px; margin: 75px auto; padding: 30px; border-radius: 5px; text-align: center; }
+  .btn { background: #FFA500; color: #fff; cursor: pointer; border-radius: 10px; } /* Orange Button */
+  .btn:hover { background-color: #FF8C00; } /* Dunkleres Orange beim Hover */
+</style>
+)";
+
+
+AsyncWebServer server(80);
+
+int failure = 0;
+
+String message2;
+String failuredate;
+struct tm timeinfo;
+int httpCode=0;
+
+
+
+void setup() {
+  Serial.begin(9600);
+  delay(2000);
+  pinMode(0, INPUT_PULLUP);
+  if (digitalRead(0) == LOW) {
+      delay(5000);
+      if (digitalRead(0) == LOW) {
+        resetToDefault();
+        ESP.restart();
+      }
+    }
+
+  EEPROM.begin(512);
+    String stored_ssid = EEPROM.readString(0);
+    stored_ssid.toCharArray(ssid, 32);
+    String stored_password = EEPROM.readString(32);
+    stored_password.toCharArray(password, 32);
+    String stored_weburl = EEPROM.readString(64);
+    stored_weburl.toCharArray(weburl, 64);
+    String stored_discord_webhook = EEPROM.readString(128);
+    stored_discord_webhook.toCharArray(discord_webhook_url, 128);
+    String stored_ntfy = EEPROM.readString(256);
+    stored_ntfy.toCharArray(ntfy_url, 128);
+    EEPROM.get(384, gmtparam);
+
+    //EPROM Check
+    if (stored_ssid.length() == 0) {
+        strcpy(ssid, default_ssid);
+    }
+    if (stored_password.length() == 0) {
+        strcpy(password, default_password);
+    }
+    if (stored_weburl.length() == 0) {
+        strcpy(weburl, serverName);
+    }
+    if (stored_discord_webhook.length() == 0) {
+        strcpy(discord_webhook_url, default_discord_webhook_url);
+    }
+    if (stored_ntfy.length() == 0) {
+        strcpy(ntfy_url, default_ntfy);
+    }
+
+  gmtOffset_sec = gmtparam * 3600;
+  
+
+
+  WiFi.begin(ssid, password);
+  delay(1000);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(5000);
+    Serial.println("connect to WiFi...");
+    Serial.println(ssid);
+    Serial.println(password);
+    Serial.println(gmtOffset_sec);
+    Serial.println(discord_webhook_url);
+    Serial.println(ntfy_url);
+  }
+  Serial.println("WiFi connected");
+  Serial.println(WiFi.localIP());
+  Serial.println("1");
+
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/settings", HTTP_GET, handleSettings);
+  //Wifi Settings
+  server.on("/wifisettings", HTTP_GET, handleWiFiSettings);
+  server.on("/wifiupdate", HTTP_POST, handleWifiUpdate);
+  //Server-URL Change
+  server.on("/changeurl", HTTP_GET, handleChangeURL);
+  server.on("/urlupdate", HTTP_POST, handleUpdateURL);
+  //Time Settings
+  server.on("/changeutc", HTTP_GET, handleUTCSetting);
+  server.on("/utcupdate", HTTP_POST, handleUTCChange);
+  //Notification Settings
+  server.on("/changediscordwebhook", HTTP_GET, handleChangeDiscord);
+  server.on("/discordwebhookupdate", HTTP_POST, handleUpdateDiscordWebhook);  
+  server.on("/notification", HTTP_GET, handleSettingsNotification);
+  server.on("/changentfy", HTTP_GET, handleChangeNtfy);
+  server.on("/ntfyupdate", HTTP_POST, handleUpdateNtfy);   
+  //Firmawre Update
+  server.on("/serverindex", HTTP_GET, [](AsyncWebServerRequest *request){
+  request->send(200, "text/html", serverIndex);
+  });
+
+  server.on("/updatefirmware", HTTP_POST, [](AsyncWebServerRequest *request){
+  request->send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
+  ESP.restart();
+  }, [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
+    if (!index) {
+      Serial.printf("Update Start: %s\n", filename.c_str());
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+        Update.printError(Serial);
+      }
+    }
+    if (len) {
+      if (Update.write(data, len) != len) {
+        Update.printError(Serial);
+      }
+    }
+    if (final) {
+      if (Update.end(true)) {
+        Serial.printf("Update Success: %u\nRebooting...\n", index + len);
+      } else {
+        Update.printError(Serial);
+      }
+    }
+  });
+
+  server.begin();
+}
+
+void loop() {
+    HTTPClient http;
+    http.begin(weburl);
+    httpCode = http.GET();
+    http.end();
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    if(httpCode == 200 && failure==0){
+        failure=1;
+        failuredate = getTime();
+        message2 = "<table><tr><th bgcolor='green'>Server On: " + failuredate + "</th></tr></table><br>" + message2;
+        if(strcmp(discord_webhook_url, "0") != 0){
+        sendDiscordMessage("server on");
+        Serial.println("discord webhook");
+        }
+        if(strcmp(ntfy_url, "0") != 0){
+        sendNtfyMessage("server on");
+        Serial.println("ntfy post");
+        }
+        
+    }
+    if(httpCode < 200 && failure==1){
+        failure=0;
+        failuredate = getTime();
+        message2 = "<table><tr><th bgcolor='red'>Server Off: " + failuredate + "</th></tr></table><br>" + message2;
+        if(strcmp(discord_webhook_url, "0") != 0){
+        sendDiscordMessage("server off");
+        Serial.println("discord webhook");
+        }
+        if(strcmp(ntfy_url, "0") != 0){
+        sendNtfyMessage("server off");
+        Serial.println("ntfy post");
+        }
+    }
+
+    Serial.println(String(httpCode));
+    Serial.println(failuredate);
+    delay(20000);
+}
+
+String getTime() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+     return "failed to get time"; 
+  }
+  char buffer[30];
+  strftime(buffer, 30, "%Y-%m-%d %H:%M:%S", &timeinfo);
+  return String(buffer); 
+}
+
+
+
+//function
+
+
+void handleRoot(AsyncWebServerRequest *request) {
+  String message = "<html><head><style>";
+  message += "body { background-color: #3498db;  font-family: Arial, sans-serif; text-align: center; border-radius: 10px;}";
+  message += "h1 { margin-bottom: 20px; color: #777;}";
+  message += "p { margin-bottom: 20px; color: #777;}";
+  message += "button { background-color: #FFA500; color: black; padding: 10px 20px; border: none; cursor: pointer; margin: 10px; font-family: Arial, sans-serif; border-radius: 10px; }";  // Abgerundete Ecken hinzufügen
+  message += "button:hover { background-color: #FF8C00; }";                                                                                                                                // Dunkleres Blau beim Hover
+  message += "table { margin: 0 auto; width: 50%; table-layout: fixed; border-collapse: separate; border-spacing: 0 15px; }";
+  message += "th, td { padding: 10px; width: 25%; border-radius: 10px; color: #ffffff;}";  
+  message += "</style></head><body><table><tr><th bgcolor='white'><h1>Web Server Status V0.1.1</h1>";
+  message += "<table><tr><td bgcolor='#3498db'>Connected SSID: " + String(ssid) + "</td></tr></table>";
+  message += "<table><tr><td bgcolor='#3498db'>URL: " + String(weburl) + "</td></tr></table>";
+  message += "<button onclick=\"location.href='/settings'\">Settings</button>";
+  if (httpCode == 200) {
+    message += "<p><table><tr><th bgcolor='green'>Server On</th></tr></table></p>";
+  } else {
+    message += "<p><table><tr><th bgcolor='red'>Server Off</th></tr></table></p>";
+  }
+  message += "</th></tr></table><table><tr><th bgcolor='white'><p>Uptime-Changelog</p>";
+  message += "<p><table>" + message2 + "</table></p></th></tr></table>";
+  message += "</body></html>";
+  request->send(200, "text/html", message);
+}
+
+
+
+
+void handleSettings(AsyncWebServerRequest *request) {
+  String htmlSettings = "<html><head><style>";
+  htmlSettings += "body { background-color: #3498db; color: #ffffff; font-family: Arial, sans-serif; text-align: center; }";
+  htmlSettings += "h1 { margin-bottom: 20px; color: #777; }";                                                                                                                                  // Farbe der Überschrift ändern
+  htmlSettings += "button { background-color: #FFA500; color: black; padding: 10px 20px; border: none; cursor: pointer; font-family: Arial, sans-serif; border-radius: 10px; width: 100%; }";  // Abgerundete Ecken hinzufügen und gleiche Breite festlegen
+  htmlSettings += "button:hover { background-color: #FF8C00; }";                                                                                                                               // Dunkleres Orange beim Hover
+  htmlSettings += "table { background: #fff;  margin: 75px auto; padding: 30px; border-radius: 10px; text-align: center; width: 40%; }";                                                       // Weiße, abgerundete Tabelle hinzufügen
+  htmlSettings += "td { padding: 10px; }";                                                                                                                                                     // Zelleninhalt zentrieren
+  htmlSettings += "#bar, #prgbar { background-color: #f1f1f1; border-radius: 10px; margin-top: 20px; }";                                                                                       // Grauer abgerundeter Balken hinzufügen
+  htmlSettings += "#bar { background-color: #3498db; width: 0%; height: 10px; }";
+  htmlSettings += "</style></head><body>";
+  htmlSettings += "<table>";
+  htmlSettings += "<tr><td><h1>Settings</h1></td></tr>";  
+  htmlSettings += "<tr><td><button onclick=\"window.location.href='/wifisettings'\">WiFi Settings</button></td></tr>";
+  htmlSettings += "<tr><td><button onclick=\"window.location.href='/changeurl'\">Change WebURL</button></td></tr>";
+  htmlSettings += "<tr><td><button onclick=\"window.location.href='/changeutc'\">Change UTC</button></td></tr>";
+  htmlSettings += "<tr><td><button onclick=\"window.location.href='/notification'\">Notification</button></td></tr>";
+  htmlSettings += "<tr><td><button onclick=\"window.location.href='/serverindex'\">Firmware Update</button></td></tr>";
+  htmlSettings += "<tr><td><button onclick=\"window.location.href='/'\">back</button></td></tr>";
+  htmlSettings += "<tr><td><div id='prgbar'><div id='bar'></div></div></td></tr>";  
+  htmlSettings += "</table>";
+  htmlSettings += "</body></html>";
+  request->send(200, "text/html", htmlSettings);
+}
+
+void handleSettingsNotification(AsyncWebServerRequest *request) {
+  String htmlSettings = "<html><head><style>";
+  htmlSettings += "body { background-color: #3498db; color: #ffffff; font-family: Arial, sans-serif; text-align: center; }";
+  htmlSettings += "h1 { margin-bottom: 20px; color: #777; }";                                                                                                                                  // Farbe der Überschrift ändern
+  htmlSettings += "button { background-color: #FFA500; color: black; padding: 10px 20px; border: none; cursor: pointer; font-family: Arial, sans-serif; border-radius: 10px; width: 100%; }";  // Abgerundete Ecken hinzufügen und gleiche Breite festlegen
+  htmlSettings += "button:hover { background-color: #FF8C00; }";                                                                                                                               // Dunkleres Orange beim Hover
+  htmlSettings += "table { background: #fff;  margin: 75px auto; padding: 30px; border-radius: 10px; text-align: center; width: 40%; }";                                                       // Weiße, abgerundete Tabelle hinzufügen
+  htmlSettings += "td { padding: 10px; }";                                                                                                                                                     // Zelleninhalt zentrieren
+  htmlSettings += "#bar, #prgbar { background-color: #f1f1f1; border-radius: 10px; margin-top: 20px; }";                                                                                       // Grauer abgerundeter Balken hinzufügen
+  htmlSettings += "#bar { background-color: #3498db; width: 0%; height: 10px; }";
+  htmlSettings += "</style></head><body>";
+  htmlSettings += "<table>";
+  htmlSettings += "<tr><td><h1>Notification</h1></td></tr>";  
+  htmlSettings += "<tr><td><button onclick=\"window.location.href='/changediscordwebhook'\">Discord Webhook</button></td></tr>";
+  htmlSettings += "<tr><td><button onclick=\"window.location.href='/changentfy'\">ntfy</button></td></tr>";
+  htmlSettings += "<tr><td><button onclick=\"window.location.href='/settings'\">back</button></td></tr>";
+  htmlSettings += "<tr><td><div id='prgbar'><div id='bar'></div></div></td></tr>";  
+  htmlSettings += "</table>";
+  htmlSettings += "</body></html>";
+  request->send(200, "text/html", htmlSettings);
+}
+
+void handleWiFiSettings(AsyncWebServerRequest *request) {
+  String htmlWiFiSettings = "<html><head><style>";
+  htmlWiFiSettings += "body { background-color: #3498db; color: #777; font-family: Arial, sans-serif; text-align: center; }";                 
+  htmlWiFiSettings += "table { background: #fff;  margin: 75px auto; padding: 30px; border-radius: 10px; text-align: center; width: 40%; }";  
+  htmlWiFiSettings += "td { padding: 10px; }";                                                                                               
+  htmlWiFiSettings += "h1 { margin-bottom: 20px; color: #777; }";                                                                             
+  htmlWiFiSettings += "input[type='text'], input[type='password'] { width: 100%; padding: 10px; margin: 5px 0; box-sizing: border-box; }";
+  htmlWiFiSettings += "input[type='submit'] { background-color: #FFA500; color: black; padding: 10px 20px; border: none; cursor: pointer; border-radius: 10px; font-family: Arial, sans-serif; }";
+  htmlWiFiSettings += "input[type='submit']:hover { background-color: #FF8C00; }";
+  htmlWiFiSettings += "#bar, #prgbar { background-color: #f1f1f1; border-radius: 10px; margin-top: 20px; }";  
+  htmlWiFiSettings += "#bar { background-color: #3498db; width: 0%; height: 10px; }";
+  htmlWiFiSettings += "</style></head><body>";
+  htmlWiFiSettings += "<table>";
+  htmlWiFiSettings += "<tr><td><h1>WiFi Settings</h1></td></tr>";  
+  htmlWiFiSettings += "<tr><td><form action=\"/wifiupdate\" method=\"POST\">";
+  htmlWiFiSettings += "New SSID: <input type=\"text\" name=\"ssid\"><br>";
+  htmlWiFiSettings += "New password: <input type=\"password\" name=\"password\"><br>";
+  htmlWiFiSettings += "<input type=\"submit\" value=\"connect\">";
+  htmlWiFiSettings += "<br> Attention!!!! If you want to reset your WiFi-settings to default then restart your ESP32 <br>press boot button of your ESP32 more than 8sec";
+  htmlWiFiSettings += "</form></td></tr>";
+  htmlWiFiSettings += "<tr><td><div id='prgbar'><div id='bar'></div></div></td></tr>"; 
+  htmlWiFiSettings += "</table>";
+  htmlWiFiSettings += "</body></html>";
+  request->send(200, "text/html", htmlWiFiSettings);
+}
+
+
+
+void handleUTCSetting(AsyncWebServerRequest *request) {
+  String htmlutc = "<html><head><style>";
+  htmlutc += "body { background-color: #3498db; color: #777; font-family: Arial, sans-serif; text-align: center; }";                 
+  htmlutc += "table { background: #fff;  margin: 75px auto; padding: 30px; border-radius: 10px; text-align: center; width: 40%; }";  
+  htmlutc += "td { padding: 10px; }";                                                                                               
+  htmlutc += "h1 { margin-bottom: 20px; color: #777; }";                                                                            
+  htmlutc += "input[type='text'] { width: 100%; padding: 10px; margin: 5px 0; box-sizing: border-box; }";
+  htmlutc += "input[type='submit'] { background-color: #FFA500; color: black; padding: 10px 20px; border: none; cursor: pointer; border-radius: 10px; font-family: Arial, sans-serif; }";
+  htmlutc += "input[type='submit']:hover { background-color: #FF8C00; }";
+  htmlutc += "#bar, #prgbar { background-color: #f1f1f1; border-radius: 10px; margin-top: 20px; }";  
+  htmlutc += "#bar { background-color: #3498db; width: 0%; height: 10px; }";
+  htmlutc += "</style></head><body>";
+  htmlutc += "<table>";
+  htmlutc += "<tr><td><h1>Change UTC</h1></td></tr>"; 
+  htmlutc += "<tr><td><form action=\'/utcupdate\' method=\'POST\'>";
+  htmlutc += "New UTC: <input type='number' name='gmtget' min='-11' max='12' step='1'><br><br>";
+  htmlutc += "<input type=\"submit\" value=\"update\">";
+  htmlutc += "</form></td></tr>";
+  htmlutc += "<tr><td><div id='prgbar'><div id='bar'></div></div></td></tr>";  
+  htmlutc += "</table>";
+  htmlutc += "</body></html>";
+  request->send(200, "text/html", htmlutc);
+}
+
+
+void handleChangeURL(AsyncWebServerRequest *request) {
+  String html = "<html><head><style>";
+  html += "body { background-color: #3498db; color: #777; font-family: Arial, sans-serif; text-align: center; }";                
+  html += "table { background: #fff;  margin: 75px auto; padding: 30px; border-radius: 10px; text-align: center; width: 40%; }"; 
+  html += "td { padding: 10px; }";                                                                                               
+  html += "h1 { margin-bottom: 20px; color: #777; }";                                                                            
+  html += "input[type='text'] { width: 100%; padding: 10px; margin: 5px 0; box-sizing: border-box; }";
+  html += "input[type='submit'] { background-color: #FFA500; color: black; padding: 10px 20px; border: none; cursor: pointer; border-radius: 10px; font-family: Arial, sans-serif; }";
+  html += "input[type='submit']:hover { background-color: #FF8C00; }";
+  html += "#bar, #prgbar { background-color: #f1f1f1; border-radius: 10px; margin-top: 20px; }";  
+  html += "#bar { background-color: #3498db; width: 0%; height: 10px; }";
+  html += "</style></head><body>";
+  html += "<table>";
+  html += "<tr><td><h1>Change WebURL</h1></td></tr>";  
+  html += "<tr><td><form action=\"/urlupdate\" method=\"POST\">";
+  html += "New URL: <input type=\"text\" name=\"weburl\"><br>";
+  html += "<input type=\"submit\" value=\"update\">";
+  html += "</form></td></tr>";
+  html += "<tr><td><div id='prgbar'><div id='bar'></div></div></td></tr>"; 
+  html += "</table>";
+  html += "</body></html>";
+  request->send(200, "text/html", html);
+}
+
+void handleChangeDiscord(AsyncWebServerRequest *request) {
+  String html = "<html><head><style>";
+  html += "body { background-color: #3498db; color: #777; font-family: Arial, sans-serif; text-align: center; }";                
+  html += "table { background: #fff;  margin: 75px auto; padding: 30px; border-radius: 10px; text-align: center; width: 40%; }";  
+  html += "td { padding: 10px; }";                                                                                                
+  html += "h1 { margin-bottom: 20px; color: #777; }";                                                                             
+  html += "input[type='text'] { width: 100%; padding: 10px; margin: 5px 0; box-sizing: border-box; }";
+  html += "input[type='submit'] { background-color: #FFA500; color: black; padding: 10px 20px; border: none; cursor: pointer; border-radius: 10px; font-family: Arial, sans-serif; }";
+  html += "input[type='submit']:hover { background-color: #FF8C00; }";
+  html += "#bar, #prgbar { background-color: #f1f1f1; border-radius: 10px; margin-top: 20px; }";  
+  html += "#bar { background-color: #3498db; width: 0%; height: 10px; }";
+  html += "</style></head><body>";
+  html += "<table>";
+  html += "<tr><td><h1>Change Discord Webhook</h1></td></tr>";  
+  html += "<tr><td><form action=\"/discordwebhookupdate\" method=\"POST\">";
+  html += "New Webhook-URL: <input type=\"text\" name=\"discord_webhook\"><br>";
+  html += "<input type=\"submit\" value=\"update\"><br>to deaktivate webhook set 0 and update";
+  html += "</form></td></tr>";
+  html += "<tr><td><div id='prgbar'><div id='bar'></div></div></td></tr>"; 
+  html += "</table>";
+  html += "</body></html>";
+  request->send(200, "text/html", html);
+}
+
+void handleChangeNtfy(AsyncWebServerRequest *request) {
+  String html = "<html><head><style>";
+  html += "body { background-color: #3498db; color: #777; font-family: Arial, sans-serif; text-align: center; }";                
+  html += "table { background: #fff;  margin: 75px auto; padding: 30px; border-radius: 10px; text-align: center; width: 40%; }";  
+  html += "td { padding: 10px; }";                                                                                                
+  html += "h1 { margin-bottom: 20px; color: #777; }";                                                                             
+  html += "input[type='text'] { width: 100%; padding: 10px; margin: 5px 0; box-sizing: border-box; }";
+  html += "input[type='submit'] { background-color: #FFA500; color: black; padding: 10px 20px; border: none; cursor: pointer; border-radius: 10px; font-family: Arial, sans-serif; }";
+  html += "input[type='submit']:hover { background-color: #FF8C00; }";
+  html += "#bar, #prgbar { background-color: #f1f1f1; border-radius: 10px; margin-top: 20px; }";  
+  html += "#bar { background-color: #3498db; width: 0%; height: 10px; }";
+  html += "</style></head><body>";
+  html += "<table>";
+  html += "<tr><td><h1>Ntfy</h1></td></tr>";  
+  html += "<tr><td><form action=\"/ntfyupdate\" method=\"POST\">";
+  html += "New Webhook-URL: <input type=\"text\" name=\"ntfy_url_1\"><br>";
+  html += "<input type=\"submit\" value=\"update\"><br>to deaktivate ntfy set 0 and update";
+  html += "</form></td></tr>";
+  html += "<tr><td><div id='prgbar'><div id='bar'></div></div></td></tr>"; 
+  html += "</table>";
+  html += "</body></html>";
+  request->send(200, "text/html", html);
+}
+
+void handleWifiUpdate(AsyncWebServerRequest *request) {
+  String new_ssid = request->getParam("ssid", true)->value();
+  String new_password = request->getParam("password", true)->value();
+
+  new_ssid.toCharArray(ssid, 32);
+  new_password.toCharArray(password, 32);
+
+  updateparam();
+}
+
+void handleUpdateURL(AsyncWebServerRequest *request) {
+  String new_weburl = request->getParam("weburl", true)->value();
+  new_weburl.toCharArray(weburl, 64);
+
+  updateparam();
+}
+
+
+void handleUTCChange(AsyncWebServerRequest *request) {
+  String new_gmtparam = request->getParam("gmtget", true)->value();
+  gmtparam = new_gmtparam.toInt();
+  Serial.println(gmtparam);
+
+  updateparam();
+}
+
+void handleUpdateDiscordWebhook(AsyncWebServerRequest *request) {
+  String new_discord_url = request->getParam("discord_webhook", true)->value();
+  new_discord_url.toCharArray(discord_webhook_url, 128);
+
+  updateparam();
+}
+
+void handleUpdateNtfy(AsyncWebServerRequest *request) {
+  String new_ntfy_url = request->getParam("ntfy_url_1", true)->value();
+  new_ntfy_url.toCharArray(ntfy_url, 128);
+
+  updateparam();
+}
+
+
+
+void updateparam() {
+
+  EEPROM.writeString(0, ssid);
+  EEPROM.writeString(32, password);
+  EEPROM.writeString(64, weburl);
+  EEPROM.writeString(128, discord_webhook_url);
+  EEPROM.writeString(256, ntfy_url);
+  EEPROM.put(384, gmtparam);
+  EEPROM.commit();
+
+
+  Serial.println("update param");
+  Serial.println("SSID:");
+  Serial.println(ssid);
+  Serial.println("Wifi pw:");
+  Serial.println(password);
+  Serial.println("URL");
+  Serial.println(weburl);
+  Serial.println("UTC:");
+  Serial.println(gmtparam);
+  Serial.println("Discord Webhook URL:");
+  Serial.println(discord_webhook_url);
+  Serial.println("Ntfy:");
+  Serial.println(ntfy_url);
+  delay(2000);
+  ESP.restart();
+}
+
+void sendDiscordMessage(const char* msg) {
+    HTTPClient http;
+    http.begin(discord_webhook_url);
+    http.addHeader("Content-Type", "application/json");
+
+    String payload = "{\"content\":\"";
+    payload += msg;
+    payload += "\"}";
+
+    http.POST(payload);
+
+    http.end();
+}
+
+void sendNtfyMessage(const char* msg) {
+    HTTPClient http;
+    http.begin(ntfy_url);
+    http.addHeader("Content-Type", "text/plain");
+
+    // HTTP-POST-Anfrage senden
+    http.POST(msg);
+
+    http.end();
+
+}
+
+
+
+void resetToDefault() {
+
+  EEPROM.begin(256);
+  EEPROM.writeString(0, default_ssid);
+  EEPROM.writeString(32, default_password);
+  EEPROM.writeString(64, serverName);
+  EEPROM.writeString(128, discord_webhook_url);
+  EEPROM.writeString(256, ntfy_url);
+  EEPROM.put(384, 0);
+  EEPROM.commit();
+
+  Serial.println("reset to default settings.");
+}
