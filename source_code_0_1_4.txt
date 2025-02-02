@@ -232,16 +232,22 @@ void loop() {
         
     }
     if(httpCode !=200 && failure==1 && WiFi.status() == WL_CONNECTED){
-        failure=0;
-        failuredate = getTime();
-        message2 = "<table><tr><th bgcolor='red'>Server Off: " + failuredate + "</th></tr></table><br>" + message2;
-        if(strcmp(discord_webhook_url, "0") != 0){
-        sendDiscordMessage("server off");
-        Serial.println("discord webhook");
-        }
-        if(strcmp(ntfy_url, "0") != 0){
-        sendNtfyMessage("server off");
-        Serial.println("ntfy post");
+        delay(60000);
+        HTTPClient http;
+        http.begin(weburl);
+        http.end();
+        if(httpCode !=200 && failure==1 && WiFi.status() == WL_CONNECTED){
+          failure=0;
+          failuredate = getTime();
+          message2 = "<table><tr><th bgcolor='red'>Server Off: " + failuredate + "</th></tr></table><br>" + message2;
+          if(strcmp(discord_webhook_url, "0") != 0){
+          sendDiscordMessage("server off");
+          Serial.println("discord webhook");
+          }
+          if(strcmp(ntfy_url, "0") != 0){
+          sendNtfyMessage("server off");
+          Serial.println("ntfy post");
+          }
         }
     }
   
@@ -283,7 +289,7 @@ void handleRoot(AsyncWebServerRequest *request) {
   message += ".green { background-color: green; }";
   message += ".red { background-color: red; }";
   message += ".rotate { transform: rotate(180deg); writing-mode: vertical-rl; }";
-  message += "</style></head><body><table><tr><th bgcolor='white'><h1>Web Server Status V0.1.2</h1>";
+  message += "</style></head><body><table><tr><th bgcolor='white'><h1>Web Server Status V0.1.4</h1>";
   message += "<table><tr><td bgcolor='#3498db'>Connected SSID: " + String(ssid) + "</td></tr></table>";
   message += "<table><tr><td bgcolor='#3498db'>URL: " + String(weburl) + "</td></tr></table>";
   message += "<button onclick=\"location.href='/settings'\">Settings</button>";
@@ -574,6 +580,7 @@ void sendNtfyMessage(const char* msg) {
     http.begin(ntfy_url);
     http.addHeader("Content-Type", "text/plain");
 
+    // HTTP-POST-Anfrage senden
     http.POST(msg);
 
     http.end();
