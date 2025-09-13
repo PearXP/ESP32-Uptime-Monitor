@@ -61,5 +61,5 @@ To do this, press and hold the **'BOOT' button** on your ESP32, then power the d
 
 
 
-!\[index](3.png)
+![index](3.png)
 
