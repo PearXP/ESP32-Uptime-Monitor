@@ -31,7 +31,7 @@ On its first boot, or after a reset, the ESP32 will create a WiFi hotspot to all
 * **SSID:** hotspot123321
 * **Password:** pw123456
 
-Connect your phone or computer to this network. Then, open your web browser and navigate to http://192.168.4.1.
+Connect your phone or computer to this network. Then, open your web browser and navigate to http://[ESP32-IP].
 
 Click the **"Settings"** button, go to the **"General"** tab, and enter your home WiFi credentials. Click **"Save \& Restart"**.
 
