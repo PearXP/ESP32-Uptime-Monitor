@@ -26,7 +26,7 @@ Upload the latest .bin file to your ESP32 via the web updater, or flash the sour
 
 ### **2. Initial WiFi Setup**
 
-On its first boot, or after a reset, the ESP32 will create a WiFi hotspot to allow for initial configuration.
+On its first boot, or after a reset, you need to create a hotspot with your smartphone so the ESP32 can connect to it.
 
 * **SSID:** hotspot123321
 * **Password:** pw123456
