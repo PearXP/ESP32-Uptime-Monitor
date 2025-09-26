@@ -4,38 +4,39 @@
 #include <EEPROM.h>
 #include <Update.h>
 #include <ArduinoJson.h>
-#include <stdarg.h> 
+#include "AsyncJson.h"
+#include <stdarg.h>
 
 // --- Configuration Version ---
-const int CONFIG_VERSION = 11; // Version 1.1
+const int CONFIG_VERSION = 12;
 const int NUM_TARGETS = 3;
 const int EEPROM_SIZE = 4095;
 const int CONFIG_VERSION_ADDRESS = 4090;
 
 // --- Data Structure for a single target ---
 struct TargetConfig {
-  char server_name[32];
-  char weburl[128];
-  char discord_webhook_url[128];
-  char ntfy_url[64];
-  char ntfy_priority[16];
-  char telegram_bot_token[50];
-  char telegram_chat_id_1[16];
-  char telegram_chat_id_2[16];
-  char telegram_chat_id_3[16];
-  char http_get_url_on[128];
-  char http_get_url_off[128];
-  char online_message[128];
-  char offline_message[128];
-  uint16_t check_interval_seconds;
-  uint8_t failure_threshold;
-  uint8_t recovery_threshold;
+    char server_name[32];
+    char weburl[128];
+    char discord_webhook_url[128];
+    char ntfy_url[64];
+    char ntfy_priority[16];
+    char telegram_bot_token[50];
+    char telegram_chat_id_1[16];
+    char telegram_chat_id_2[16];
+    char telegram_chat_id_3[16];
+    char http_get_url_on[128];
+    char http_get_url_off[128];
+    char online_message[128];
+    char offline_message[128];
+    uint16_t check_interval_seconds;
+    uint8_t failure_threshold;
+    uint8_t recovery_threshold;
 };
 
 // --- Default Configuration (Fallback values) ---
 char default_ssid[32] = "hotspot123321";
 char default_password[32] = "pw123456";
-int  default_gmt_offset = 1;
+int default_gmt_offset = 1;
 
 // --- Global variables for operation ---
 char ssid[32];
@@ -43,22 +44,28 @@ char password[32];
 int gmt_offset;
 TargetConfig targets[NUM_TARGETS];
 
-// Runtime state variables
+// --- Runtime state variables ---
 long gmtOffset_sec;
 const char* ntpServer = "pool.ntp.org";
 int httpCode[NUM_TARGETS] = {0};
 unsigned long pingTime[NUM_TARGETS] = {0};
 unsigned long minpingTime[NUM_TARGETS] = {0};
 unsigned long maxpingTime[NUM_TARGETS] = {0};
-String logMessages[NUM_TARGETS];
 unsigned long last_check_time[NUM_TARGETS] = {0};
 uint8_t failure_count[NUM_TARGETS] = {0};
 uint8_t success_count[NUM_TARGETS] = {0};
 bool confirmed_online_state[NUM_TARGETS] = {true};
 
-// NEW: Buffer for the serial log
-String serialLogBuffer = "";
-const int MAX_LOG_BUFFER_SIZE = 2048; // NEW: 2KB for logs to save memory
+// --- Buffers for logs to prevent memory fragmentation ---
+const int TARGET_LOG_SIZE = 1024;
+const int SERIAL_LOG_SIZE = 2048;
+char targetLogMessages[NUM_TARGETS][TARGET_LOG_SIZE];
+char serialLogBuffer[SERIAL_LOG_SIZE];
+int serialLogBufferPos = 0;
+
+// --- WiFi Reconnection Timer ---
+unsigned long lastWifiReconnectAttempt = 0;
+const long wifiReconnectInterval = 10000; // Try to reconnect every 10 seconds
 
 AsyncWebServer server(80);
 
@@ -70,7 +77,6 @@ document.getElementById('upload_form').onsubmit=function(e){e.preventDefault();v
 
 
 // --- HTML, CSS & JS for the modern web interface ---
-// THIS ENTIRE SECTION HAS BEEN REPLACED WITH THE CORRECT, UN-MINIFIED VERSION
 const char* INDEX_HTML = R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
@@ -95,7 +101,7 @@ const char* INDEX_HTML = R"rawliteral(
         .container { max-width: 900px; margin: auto; }
         .main-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
         .main-header h1 { margin: 0; }
-        .header-buttons { display: flex; gap: 10px; } /*NEW*/
+        .header-buttons { display: flex; gap: 10px; }
         .status-box { display: flex; align-items: center; background: #333; padding: 5px 10px; border-radius: 5px; }
         .status-indicator { width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; background-color: #7f8c8d; transition: background-color 0.3s; }
         .online .status-indicator { background-color: var(--color-green); }
@@ -220,13 +226,11 @@ const char* INDEX_HTML = R"rawliteral(
             let refreshIntervalId;
             let logRefreshIntervalId; 
 
-            // CHANGED: Renamed variables for the modals for clarity
             const settingsModal = document.getElementById('settingsModal');
             const settingsBtn = document.getElementById('settingsBtn');
             const closeSettingsBtn = document.getElementById('closeSettingsBtn');
             const settingsForm = document.getElementById('settingsForm');
 
-            // NEW: Variables for the log modal
             const logModal = document.getElementById('logModal');
             const logBtn = document.getElementById('logBtn');
             const closeLogBtn = document.getElementById('closeLogBtn');
@@ -269,15 +273,14 @@ const char* INDEX_HTML = R"rawliteral(
 
             settingsBtn.onclick = () => { stopAutoRefresh(); settingsModal.style.display = 'block'; }
             closeSettingsBtn.onclick = () => { settingsModal.style.display = 'none'; startAutoRefresh(); }
-
-            // NEW: Log Modal Logic
+            
             async function fetchLogs() {
                 try {
                     const response = await fetch('/api/logs');
                     if (!response.ok) throw new Error('Log fetch failed');
                     const logText = await response.text();
                     logContent.textContent = logText;
-                    logContent.scrollTop = logContent.scrollHeight; // Auto-scroll
+                    logContent.scrollTop = logContent.scrollHeight;
                 } catch (error) {
                     console.error('Error fetching logs:', error);
                     logContent.textContent = 'Error loading logs.';
@@ -287,8 +290,8 @@ const char* INDEX_HTML = R"rawliteral(
             logBtn.onclick = () => {
                 stopAutoRefresh();
                 logModal.style.display = 'block';
-                fetchLogs(); // Load once immediately
-                logRefreshIntervalId = setInterval(fetchLogs, 2000); // Then refresh every 2s
+                fetchLogs();
+                logRefreshIntervalId = setInterval(fetchLogs, 2000);
             };
 
             const closeLogModal = () => {
@@ -298,7 +301,6 @@ const char* INDEX_HTML = R"rawliteral(
             };
             closeLogBtn.onclick = closeLogModal;
 
-            // CHANGED: window.onclick for both modals
             window.onclick = (event) => {
                 if (event.target == settingsModal) {
                     settingsModal.style.display = 'none';
@@ -378,7 +380,7 @@ const char* INDEX_HTML = R"rawliteral(
                     if (logEntries.length === 0) {
                         timeline.innerHTML = '<p>No log entries yet.</p>';
                     } else {
-                        timeline.innerHTML = ''; // Clear previous entries before adding new ones
+                        timeline.innerHTML = '';
                         logEntries.forEach(entry => {
                             const parts = entry.split(';');
                             if (parts.length < 2) return;
@@ -393,7 +395,6 @@ const char* INDEX_HTML = R"rawliteral(
                         });
                     }
 
-                    // Populate settings form for this server
                     document.getElementById(`server_name_${i}`).value = target.config.server_name;
                     document.getElementById(`weburl_${i}`).value = target.config.weburl;
                     document.getElementById(`check_interval_${i}`).value = target.config.check_interval_seconds;
@@ -437,97 +438,121 @@ const char* INDEX_HTML = R"rawliteral(
 </html>
 )rawliteral";
 
+
 // --- HELPER FUNCTIONS ---
 
-String getTime() {
+void getFormattedTime(char* buffer, size_t bufferSize) {
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo)) {
-        return "Time not set";
+        strncpy(buffer, "Time not set", bufferSize -1);
+        buffer[bufferSize -1] = '\0';
+        return;
     }
-    char buffer[30];
-    strftime(buffer, 30, "%Y-%m-%d %H:%M:%S", &timeinfo);
-    return String(buffer);
+    strftime(buffer, bufferSize, "%Y-%m-%d %H:%M:%S", &timeinfo);
 }
 
-// FIXED: Renamed from log_printf to web_log_printf to resolve conflict
 void web_log_printf(const char *format, ...) {
-    char buf[256];
+    char timeBuf[30];
+    getFormattedTime(timeBuf, sizeof(timeBuf));
+
+    char logBuf[256];
     va_list args;
     va_start(args, format);
-    vsnprintf(buf, sizeof(buf), format, args);
+    vsnprintf(logBuf, sizeof(logBuf), format, args);
     va_end(args);
 
-    // Send to the serial monitor
-    Serial.print(buf);
-    Serial.print("\n"); // explicit newline for the monitor
+    Serial.printf("[%s] %s\n", timeBuf, logBuf);
 
-    // Add to the web log buffer
-    serialLogBuffer += "[" + getTime() + "] " + String(buf) + "\n";
-    
-    // Trim buffer if it gets too long
-    if (serialLogBuffer.length() > MAX_LOG_BUFFER_SIZE) {
-        int firstNewline = serialLogBuffer.indexOf('\n');
-        if (firstNewline != -1) {
-            serialLogBuffer = serialLogBuffer.substring(firstNewline + 1);
-        } else {
-            serialLogBuffer = serialLogBuffer.substring(serialLogBuffer.length() - MAX_LOG_BUFFER_SIZE);
-        }
+    int len = snprintf(NULL, 0, "[%s] %s\n", timeBuf, logBuf);
+    if (serialLogBufferPos + len >= SERIAL_LOG_SIZE) {
+        serialLogBufferPos = 0;
     }
+    snprintf(serialLogBuffer + serialLogBufferPos, SERIAL_LOG_SIZE - serialLogBufferPos, "[%s] %s\n", timeBuf, logBuf);
+    serialLogBufferPos += len;
+}
+
+void prependToLog(char* logBuffer, const char* newEntry, size_t bufferSize) {
+    size_t entryLen = strlen(newEntry);
+    if (entryLen >= bufferSize) return;
+
+    size_t currentLen = strlen(logBuffer);
+    
+    if (currentLen + entryLen >= bufferSize) {
+        currentLen = bufferSize - entryLen - 1;
+    }
+
+    memmove(logBuffer + entryLen, logBuffer, currentLen);
+    memcpy(logBuffer, newEntry, entryLen);
+    logBuffer[currentLen + entryLen] = '\0';
 }
 
 void safeStrcpy(char* dest, const char* src, size_t size) {
-  strncpy(dest, src, size - 1);
-  dest[size - 1] = '\0';
+    strncpy(dest, src, size - 1);
+    dest[size - 1] = '\0';
 }
 
-String urlEncode(const char* msg) {
-  String encodedMsg = "";
-  char c;
-  char hex_buf[4];
-  while (*msg) {
-    c = *msg;
-    if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
-      encodedMsg += c;
-    } else {
-      sprintf(hex_buf, "%%%02X", c);
-      encodedMsg += hex_buf;
+void urlEncode(char* dst, const char* src, size_t dstSize) {
+    char c, hex_buf[4];
+    size_t written = 0;
+    while (*src && written + 4 < dstSize) {
+        c = *src++;
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            dst[written++] = c;
+        } else {
+            sprintf(hex_buf, "%%%02X", c);
+            dst[written++] = hex_buf[0];
+            dst[written++] = hex_buf[1];
+            dst[written++] = hex_buf[2];
+        }
     }
-    msg++;
-  }
-  return encodedMsg;
+    dst[written] = '\0';
 }
 
 void resetToDefault() {
-  Serial.println("Resetting to default values...");
-  EEPROM.begin(EEPROM_SIZE);
-  for (int i = 0; i < EEPROM_SIZE; i++) EEPROM.write(i, 0);
-  EEPROM.put(CONFIG_VERSION_ADDRESS, CONFIG_VERSION);
-  EEPROM.commit();
-  EEPROM.end();
-  Serial.println("EEPROM cleared. Defaults will be loaded on next boot.");
+    Serial.println("Resetting to default values...");
+    EEPROM.begin(EEPROM_SIZE);
+    for (int i = 0; i < EEPROM_SIZE; i++) EEPROM.write(i, 0);
+    EEPROM.put(CONFIG_VERSION_ADDRESS, CONFIG_VERSION);
+    EEPROM.commit();
+    EEPROM.end();
+    Serial.println("EEPROM cleared. Defaults will be loaded on next boot.");
 }
 
 void loadConfig() {
     EEPROM.begin(EEPROM_SIZE);
-    EEPROM.get(0, ssid); EEPROM.get(32, password); EEPROM.get(64, gmt_offset);
+    EEPROM.get(0, ssid);
+    EEPROM.get(32, password);
+    EEPROM.get(64, gmt_offset);
     int address = 100;
-    for(int i = 0; i < NUM_TARGETS; i++) {
+    for (int i = 0; i < NUM_TARGETS; i++) {
         EEPROM.get(address, targets[i]);
         address += sizeof(TargetConfig);
     }
     EEPROM.end();
+
     if (strlen(ssid) == 0) {
-        strcpy(ssid, default_ssid); strcpy(password, default_password); gmt_offset = default_gmt_offset;
-        for(int i = 0; i < NUM_TARGETS; i++) {
-          String name = "Server " + String(i+1);
-          safeStrcpy(targets[i].server_name, name.c_str(), sizeof(targets[i].server_name));
-          strcpy(targets[i].weburl, (i == 0) ? "http://localhost" : "0");
-          strcpy(targets[i].discord_webhook_url, "0"); strcpy(targets[i].ntfy_url, "0"); strcpy(targets[i].ntfy_priority, "default");
-          strcpy(targets[i].telegram_bot_token, "0"); strcpy(targets[i].telegram_chat_id_1, "0"); strcpy(targets[i].telegram_chat_id_2, "0"); strcpy(targets[i].telegram_chat_id_3, "0");
-          strcpy(targets[i].http_get_url_on, "0"); strcpy(targets[i].http_get_url_off, "0");
-          safeStrcpy(targets[i].online_message, "✅ {NAME} is back online: {URL}", sizeof(targets[i].online_message));
-          safeStrcpy(targets[i].offline_message, "🚨 {NAME} OUTAGE: {URL} (Code: {CODE})", sizeof(targets[i].offline_message));
-          targets[i].check_interval_seconds = 20; targets[i].failure_threshold = 3; targets[i].recovery_threshold = 2;
+        strcpy(ssid, default_ssid);
+        strcpy(password, default_password);
+        gmt_offset = default_gmt_offset;
+        for (int i = 0; i < NUM_TARGETS; i++) {
+            char name[10];
+            snprintf(name, sizeof(name), "Server %d", i + 1);
+            safeStrcpy(targets[i].server_name, name, sizeof(targets[i].server_name));
+            strcpy(targets[i].weburl, (i == 0) ? "http://localhost" : "0");
+            strcpy(targets[i].discord_webhook_url, "0");
+            strcpy(targets[i].ntfy_url, "0");
+            strcpy(targets[i].ntfy_priority, "default");
+            strcpy(targets[i].telegram_bot_token, "0");
+            strcpy(targets[i].telegram_chat_id_1, "0");
+            strcpy(targets[i].telegram_chat_id_2, "0");
+            strcpy(targets[i].telegram_chat_id_3, "0");
+            strcpy(targets[i].http_get_url_on, "0");
+            strcpy(targets[i].http_get_url_off, "0");
+            safeStrcpy(targets[i].online_message, "✅ {NAME} is back online: {URL}", sizeof(targets[i].online_message));
+            safeStrcpy(targets[i].offline_message, "🚨 {NAME} OUTAGE: {URL} (Code: {CODE})", sizeof(targets[i].offline_message));
+            targets[i].check_interval_seconds = 20;
+            targets[i].failure_threshold = 3;
+            targets[i].recovery_threshold = 2;
         }
     }
     gmtOffset_sec = gmt_offset * 3600;
@@ -535,12 +560,17 @@ void loadConfig() {
 
 void saveConfig() {
     EEPROM.begin(EEPROM_SIZE);
-    EEPROM.put(0, ssid); EEPROM.put(32, password); EEPROM.put(64, gmt_offset);
+    EEPROM.put(0, ssid);
+    EEPROM.put(32, password);
+    EEPROM.put(64, gmt_offset);
     int address = 100;
-    for(int i = 0; i < NUM_TARGETS; i++) {
-        EEPROM.put(address, targets[i]); address += sizeof(TargetConfig);
+    for (int i = 0; i < NUM_TARGETS; i++) {
+        EEPROM.put(address, targets[i]);
+        address += sizeof(TargetConfig);
     }
-    EEPROM.put(CONFIG_VERSION_ADDRESS, CONFIG_VERSION); EEPROM.commit(); EEPROM.end();
+    EEPROM.put(CONFIG_VERSION_ADDRESS, CONFIG_VERSION);
+    EEPROM.commit();
+    EEPROM.end();
 }
 
 void updatePingStats(int index) {
@@ -548,22 +578,37 @@ void updatePingStats(int index) {
     if (pingTime[index] > maxpingTime[index]) maxpingTime[index] = pingTime[index];
 }
 
-void sendNotifications(int index, String msg) {
+void sendNotifications(int index, const char* msg) {
     TargetConfig target = targets[index];
+    HTTPClient http;
+
     if (strcmp(target.discord_webhook_url, "0") != 0 && strlen(target.discord_webhook_url) > 10) {
-      HTTPClient http; http.begin(target.discord_webhook_url); http.addHeader("Content-Type", "application/json");
-      String payload = "{\"content\":\"" + msg + "\"}"; http.POST(payload); http.end();
+        http.begin(target.discord_webhook_url);
+        http.addHeader("Content-Type", "application/json");
+        char payload[256];
+        snprintf(payload, sizeof(payload), "{\"content\":\"%s\"}", msg);
+        http.POST(payload);
+        http.end();
     }
     if (strcmp(target.ntfy_url, "0") != 0 && strlen(target.ntfy_url) > 10) {
-      HTTPClient http; http.begin(target.ntfy_url); http.addHeader("Content-Type", "text/plain");
-      http.addHeader("Priority", target.ntfy_priority); http.POST(msg); http.end();
+        http.begin(target.ntfy_url);
+        http.addHeader("Content-Type", "text/plain");
+        http.addHeader("Priority", target.ntfy_priority);
+        http.POST(msg);
+        http.end();
     }
     if (strlen(target.telegram_bot_token) > 10) {
-        char* chat_ids[] = {target.telegram_chat_id_1, target.telegram_chat_id_2, target.telegram_chat_id_3};
+        char encodedMsg[512];
+        urlEncode(encodedMsg, msg, sizeof(encodedMsg));
+        
+        char url[512];
+        const char* chat_ids[] = {target.telegram_chat_id_1, target.telegram_chat_id_2, target.telegram_chat_id_3};
         for (int j = 0; j < 3; j++) {
             if (strcmp(chat_ids[j], "0") != 0 && strlen(chat_ids[j]) > 1) {
-                String url = "https://api.telegram.org/bot" + String(target.telegram_bot_token) + "/sendMessage?chat_id=" + String(chat_ids[j]) + "&text=" + urlEncode(msg.c_str());
-                HTTPClient http; http.begin(url); http.GET(); http.end();
+                snprintf(url, sizeof(url), "https://api.telegram.org/bot%s/sendMessage?chat_id=%s&text=%s", target.telegram_bot_token, chat_ids[j], encodedMsg);
+                http.begin(url);
+                http.GET();
+                http.end();
             }
         }
     }
@@ -571,7 +616,20 @@ void sendNotifications(int index, String msg) {
 
 void sendCustomHttpRequest(const char* url) {
     if (strcmp(url, "0") == 0 || strlen(url) < 10) return;
-    HTTPClient http; http.begin(url); http.GET(); http.end();
+    HTTPClient http;
+    http.begin(url);
+    http.GET();
+    http.end();
+}
+
+void manageWifiConnection() {
+  if (WiFi.status() != WL_CONNECTED) {
+    if (millis() - lastWifiReconnectAttempt > wifiReconnectInterval) {
+      lastWifiReconnectAttempt = millis();
+      web_log_printf("WiFi connection lost. Attempting to reconnect...");
+      WiFi.begin(ssid, password);
+    }
+  }
 }
 
 void setup() {
@@ -580,161 +638,250 @@ void setup() {
 
     EEPROM.begin(EEPROM_SIZE);
     int storedVersion = 0;
-    EEPROM.get(CONFIG_VERSION_ADDRESS, storedVersion); EEPROM.end();
+    EEPROM.get(CONFIG_VERSION_ADDRESS, storedVersion);
+    EEPROM.end();
     if (storedVersion != CONFIG_VERSION) {
         web_log_printf("Config version mismatch! Stored: %d, Firmware: %d. Resetting.", storedVersion, CONFIG_VERSION);
-        resetToDefault(); delay(1000); ESP.restart();
+        resetToDefault();
+        delay(1000);
+        ESP.restart();
     }
-    pinMode(0, INPUT_PULLUP); delay(100);
+    
+    pinMode(0, INPUT_PULLUP);
+    delay(100);
     if (digitalRead(0) == LOW) {
         web_log_printf("BOOT button pressed. Hold for 5 seconds for manual reset...");
         delay(5000);
         if (digitalRead(0) == LOW) {
-            resetToDefault(); web_log_printf("Device will restart with default values...");
-            delay(1000); ESP.restart();
+            resetToDefault();
+            web_log_printf("Device will restart with default values...");
+            delay(1000);
+            ESP.restart();
         }
     }
+
     loadConfig();
+    
     WiFi.begin(ssid, password);
     web_log_printf("Connecting to WiFi: %s", ssid);
     int retries = 0;
-    while (WiFi.status() != WL_CONNECTED && retries < 20) { delay(500); Serial.print("."); retries++; }
-    if(WiFi.status() == WL_CONNECTED) {
-      web_log_printf("WiFi connected!");
-      web_log_printf("IP Address: %s", WiFi.localIP().toString().c_str());
-      configTime(gmtOffset_sec, 0, ntpServer);
-    } else {
-      web_log_printf("WiFi connection failed.");
+    while (WiFi.status() != WL_CONNECTED && retries < 20) {
+        delay(500);
+        Serial.print(".");
+        retries++;
     }
     
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){ request->send(200, "text/html", INDEX_HTML); });
+    if (WiFi.status() == WL_CONNECTED) {
+        web_log_printf("WiFi connected!");
+        web_log_printf("IP Address: %s", WiFi.localIP().toString().c_str());
+        configTime(gmtOffset_sec, 0, ntpServer);
+    } else {
+        web_log_printf("WiFi connection failed. Will keep trying in the background.");
+    }
+    
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "text/html", INDEX_HTML);
+    });
 
-    server.on("/api/logs", HTTP_GET, [](AsyncWebServerRequest *request){
+    server.on("/api/logs", HTTP_GET, [](AsyncWebServerRequest *request) {
         request->send(200, "text/plain", serialLogBuffer);
     });
 
-    server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request){
-        DynamicJsonDocument json(4096);
-        json["firmware_version"] = CONFIG_VERSION;
-        JsonObject general_config = json.createNestedObject("general_config");
-        general_config["ssid"] = ssid; general_config["gmt_offset"] = gmt_offset;
-        JsonArray targets_json = json.createNestedArray("targets");
-        for(int i=0; i < NUM_TARGETS; i++) {
-          JsonObject target_obj = targets_json.createNestedObject();
-          target_obj["http_code"] = httpCode[i]; target_obj["log"] = logMessages[i];
-          JsonObject ping = target_obj.createNestedObject("ping");
-          ping["last"] = pingTime[i]; ping["min"] = minpingTime[i]; ping["max"] = maxpingTime[i];
-          JsonObject config = target_obj.createNestedObject("config");
-          config["server_name"] = targets[i].server_name; config["weburl"] = targets[i].weburl; config["discord_webhook"] = targets[i].discord_webhook_url;
-          config["ntfy_url"] = targets[i].ntfy_url; config["ntfy_priority"] = targets[i].ntfy_priority; config["telegram_bot_token"] = targets[i].telegram_bot_token;
-          config["telegram_chat_id_1"] = targets[i].telegram_chat_id_1; config["telegram_chat_id_2"] = targets[i].telegram_chat_id_2; config["telegram_chat_id_3"] = targets[i].telegram_chat_id_3;
-          config["http_get_url_on"] = targets[i].http_get_url_on; config["http_get_url_off"] = targets[i].http_get_url_off;
-          config["online_message"] = targets[i].online_message; config["offline_message"] = targets[i].offline_message;
-          config["check_interval_seconds"] = targets[i].check_interval_seconds; config["failure_threshold"] = targets[i].failure_threshold; config["recovery_threshold"] = targets[i].recovery_threshold;
+    server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+        AsyncJsonResponse * response = new AsyncJsonResponse();
+        JsonObject root = response->getRoot();
+
+        root["firmware_version"] = CONFIG_VERSION;
+        JsonObject general_config = root.createNestedObject("general_config");
+        general_config["ssid"] = ssid;
+        general_config["gmt_offset"] = gmt_offset;
+
+        JsonArray targets_json = root.createNestedArray("targets");
+        for (int i = 0; i < NUM_TARGETS; i++) {
+            JsonObject target_obj = targets_json.createNestedObject();
+            target_obj["http_code"] = httpCode[i];
+            target_obj["log"] = targetLogMessages[i];
+            JsonObject ping = target_obj.createNestedObject("ping");
+            ping["last"] = pingTime[i];
+            ping["min"] = minpingTime[i];
+            ping["max"] = maxpingTime[i];
+            
+            JsonObject config = target_obj.createNestedObject("config");
+            config["server_name"] = targets[i].server_name;
+            config["weburl"] = targets[i].weburl;
+            config["discord_webhook"] = targets[i].discord_webhook_url;
+            config["ntfy_url"] = targets[i].ntfy_url;
+            config["ntfy_priority"] = targets[i].ntfy_priority;
+            config["telegram_bot_token"] = targets[i].telegram_bot_token;
+            config["telegram_chat_id_1"] = targets[i].telegram_chat_id_1;
+            config["telegram_chat_id_2"] = targets[i].telegram_chat_id_2;
+            config["telegram_chat_id_3"] = targets[i].telegram_chat_id_3;
+            config["http_get_url_on"] = targets[i].http_get_url_on;
+            config["http_get_url_off"] = targets[i].http_get_url_off;
+            config["online_message"] = targets[i].online_message;
+            config["offline_message"] = targets[i].offline_message;
+            config["check_interval_seconds"] = targets[i].check_interval_seconds;
+            config["failure_threshold"] = targets[i].failure_threshold;
+            config["recovery_threshold"] = targets[i].recovery_threshold;
         }
-        String response; serializeJson(json, response); request->send(200, "application/json", response);
+        
+        response->setLength();
+        request->send(response);
     });
-    server.on("/api/settings", HTTP_POST, [](AsyncWebServerRequest *request){
-      int params = request->params();
-      for(int i=0; i<params; i++){
-          const AsyncWebParameter* p = request->getParam(i); if(!p->isPost()) continue;
-          String paramName = p->name(); String paramValue = p->value();
-          if (paramName == "ssid") safeStrcpy(ssid, paramValue.c_str(), sizeof(ssid));
-          else if (paramName == "password" && paramValue.length() > 0) safeStrcpy(password, paramValue.c_str(), sizeof(password));
-          else if (paramName == "gmt_offset") gmt_offset = paramValue.toInt();
-          else {
-              int lastUnderscore = paramName.lastIndexOf('_'); if (lastUnderscore == -1) continue;
-              int serverIndex = paramName.substring(lastUnderscore + 1).toInt();
-              if (serverIndex >= 0 && serverIndex < NUM_TARGETS) {
-                  String settingName = paramName.substring(0, lastUnderscore);
-                  if(settingName.startsWith("telegram_chat_id")) settingName = "telegram_chat_id";
-                  if (settingName == "server_name") safeStrcpy(targets[serverIndex].server_name, paramValue.c_str(), sizeof(targets[serverIndex].server_name));
-                  else if (settingName == "weburl") safeStrcpy(targets[serverIndex].weburl, paramValue.c_str(), sizeof(targets[serverIndex].weburl));
-                  else if (settingName == "check_interval") targets[serverIndex].check_interval_seconds = paramValue.toInt();
-                  else if (settingName == "failure_threshold") targets[serverIndex].failure_threshold = paramValue.toInt();
-                  else if (settingName == "recovery_threshold") targets[serverIndex].recovery_threshold = paramValue.toInt();
-                  else if (settingName == "online_message") safeStrcpy(targets[serverIndex].online_message, paramValue.c_str(), sizeof(targets[serverIndex].online_message));
-                  else if (settingName == "offline_message") safeStrcpy(targets[serverIndex].offline_message, paramValue.c_str(), sizeof(targets[serverIndex].offline_message));
-                  else if (settingName == "discord_webhook") safeStrcpy(targets[serverIndex].discord_webhook_url, paramValue.c_str(), sizeof(targets[serverIndex].discord_webhook_url));
-                  else if (settingName == "ntfy_url") safeStrcpy(targets[serverIndex].ntfy_url, paramValue.c_str(), sizeof(targets[serverIndex].ntfy_url));
-                  else if (settingName == "ntfy_priority") safeStrcpy(targets[serverIndex].ntfy_priority, paramValue.c_str(), sizeof(targets[serverIndex].ntfy_priority));
-                  else if (settingName == "telegram_bot_token") safeStrcpy(targets[serverIndex].telegram_bot_token, paramValue.c_str(), sizeof(targets[serverIndex].telegram_bot_token));
-                  else if (settingName == "telegram_chat_id") {
-                      char idNum = paramName.charAt(lastUnderscore - 1);
-                      if (idNum == '1') safeStrcpy(targets[serverIndex].telegram_chat_id_1, paramValue.c_str(), sizeof(targets[serverIndex].telegram_chat_id_1));
-                      else if (idNum == '2') safeStrcpy(targets[serverIndex].telegram_chat_id_2, paramValue.c_str(), sizeof(targets[serverIndex].telegram_chat_id_2));
-                      else if (idNum == '3') safeStrcpy(targets[serverIndex].telegram_chat_id_3, paramValue.c_str(), sizeof(targets[serverIndex].telegram_chat_id_3));
-                  }
-                  else if (settingName == "http_get_url_on") safeStrcpy(targets[serverIndex].http_get_url_on, paramValue.c_str(), sizeof(targets[serverIndex].http_get_url_on));
-                  else if (settingName == "http_get_url_off") safeStrcpy(targets[serverIndex].http_get_url_off, paramValue.c_str(), sizeof(targets[serverIndex].http_get_url_off));
-              }
-          }
-      }
-      saveConfig(); request->send(200, "text/plain", "OK"); delay(1000); ESP.restart();
+    
+    server.on("/api/settings", HTTP_POST, [](AsyncWebServerRequest *request) {
+        for (int i = 0; i < request->params(); i++) {
+            const AsyncWebParameter* p = request->getParam(i);
+            if (!p->isPost()) continue;
+            
+            const char* paramName = p->name().c_str();
+            const char* paramValue = p->value().c_str();
+
+            if (strcmp(paramName, "ssid") == 0) safeStrcpy(ssid, paramValue, sizeof(ssid));
+            else if (strcmp(paramName, "password") == 0 && strlen(paramValue) > 0) safeStrcpy(password, paramValue, sizeof(password));
+            else if (strcmp(paramName, "gmt_offset") == 0) gmt_offset = atoi(paramValue);
+            else {
+                const char* lastUnderscore = strrchr(paramName, '_');
+                if (lastUnderscore == NULL) continue;
+                
+                int serverIndex = atoi(lastUnderscore + 1);
+                if (serverIndex >= 0 && serverIndex < NUM_TARGETS) {
+                    char settingNameBuf[64];
+                    strncpy(settingNameBuf, paramName, lastUnderscore - paramName);
+                    settingNameBuf[lastUnderscore - paramName] = '\0';
+                    
+                    if (strstr(settingNameBuf, "telegram_chat_id")) strcpy(settingNameBuf, "telegram_chat_id");
+
+                    if (strcmp(settingNameBuf, "server_name") == 0) safeStrcpy(targets[serverIndex].server_name, paramValue, sizeof(targets[serverIndex].server_name));
+                    else if (strcmp(settingNameBuf, "weburl") == 0) safeStrcpy(targets[serverIndex].weburl, paramValue, sizeof(targets[serverIndex].weburl));
+                    else if (strcmp(settingNameBuf, "check_interval") == 0) targets[serverIndex].check_interval_seconds = atoi(paramValue);
+                    else if (strcmp(settingNameBuf, "failure_threshold") == 0) targets[serverIndex].failure_threshold = atoi(paramValue);
+                    else if (strcmp(settingNameBuf, "recovery_threshold") == 0) targets[serverIndex].recovery_threshold = atoi(paramValue);
+                    else if (strcmp(settingNameBuf, "online_message") == 0) safeStrcpy(targets[serverIndex].online_message, paramValue, sizeof(targets[serverIndex].online_message));
+                    else if (strcmp(settingNameBuf, "offline_message") == 0) safeStrcpy(targets[serverIndex].offline_message, paramValue, sizeof(targets[serverIndex].offline_message));
+                    else if (strcmp(settingNameBuf, "discord_webhook") == 0) safeStrcpy(targets[serverIndex].discord_webhook_url, paramValue, sizeof(targets[serverIndex].discord_webhook_url));
+                    else if (strcmp(settingNameBuf, "ntfy_url") == 0) safeStrcpy(targets[serverIndex].ntfy_url, paramValue, sizeof(targets[serverIndex].ntfy_url));
+                    else if (strcmp(settingNameBuf, "ntfy_priority") == 0) safeStrcpy(targets[serverIndex].ntfy_priority, paramValue, sizeof(targets[serverIndex].ntfy_priority));
+                    else if (strcmp(settingNameBuf, "telegram_bot_token") == 0) safeStrcpy(targets[serverIndex].telegram_bot_token, paramValue, sizeof(targets[serverIndex].telegram_bot_token));
+                    else if (strcmp(settingNameBuf, "telegram_chat_id") == 0) {
+                        char idNum = paramName[lastUnderscore - paramName - 1];
+                        if (idNum == '1') safeStrcpy(targets[serverIndex].telegram_chat_id_1, paramValue, sizeof(targets[serverIndex].telegram_chat_id_1));
+                        else if (idNum == '2') safeStrcpy(targets[serverIndex].telegram_chat_id_2, paramValue, sizeof(targets[serverIndex].telegram_chat_id_2));
+                        else if (idNum == '3') safeStrcpy(targets[serverIndex].telegram_chat_id_3, paramValue, sizeof(targets[serverIndex].telegram_chat_id_3));
+                    }
+                    else if (strcmp(settingNameBuf, "http_get_url_on") == 0) safeStrcpy(targets[serverIndex].http_get_url_on, paramValue, sizeof(targets[serverIndex].http_get_url_on));
+                    else if (strcmp(settingNameBuf, "http_get_url_off") == 0) safeStrcpy(targets[serverIndex].http_get_url_off, paramValue, sizeof(targets[serverIndex].http_get_url_off));
+                }
+            }
+        }
+        saveConfig();
+        request->send(200, "text/plain", "OK");
+        delay(1000);
+        ESP.restart();
     });
-    server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request){ request->send(200, "text/html", UPDATE_HTML); });
+
+    server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "text/html", UPDATE_HTML);
+    });
+    
     server.on("/updatefirmware", HTTP_POST, 
-      [](AsyncWebServerRequest *request){ request->send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK"); }, 
-      [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
-        if (!index) {
-          web_log_printf("Update Start: %s", filename.c_str());
-          if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Serial);
-        }
-        if (len) { if (Update.write(data, len) != len) Update.printError(Serial); }
-        if (final) {
-          if (Update.end(true)) {
-            web_log_printf("Update Success: %u bytes", index + len); resetToDefault();
-            delay(1000); ESP.restart();
-          } else { Update.printError(Serial); }
-        }
-    });
+        [](AsyncWebServerRequest *request) {
+            request->send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
+        }, 
+        [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
+            if (!index) {
+                web_log_printf("Update Start: %s", filename.c_str());
+                if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Serial);
+            }
+            if (len) {
+                if (Update.write(data, len) != len) Update.printError(Serial);
+            }
+            if (final) {
+                if (Update.end(true)) {
+                    web_log_printf("Update Success: %u bytes", index + len);
+                    resetToDefault();
+                    delay(1000);
+                    ESP.restart();
+                } else {
+                    Update.printError(Serial);
+                }
+            }
+        });
+
     server.begin();
 }
 
+
 void loop() {
-    if (WiFi.status() != WL_CONNECTED) {
-      web_log_printf("WiFi disconnected. Reconnecting...");
-      WiFi.reconnect();
-      delay(1000);
-      return;
-    }
-    
-    for (int i=0; i<NUM_TARGETS; i++) {
-      if(strcmp(targets[i].weburl, "0") == 0 || strlen(targets[i].weburl) < 10) { httpCode[i] = 0; continue; }
-      if(millis() - last_check_time[i] < (targets[i].check_interval_seconds * 1000)) { continue; }
-      last_check_time[i] = millis();
+    manageWifiConnection();
 
-      HTTPClient http; http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS); http.begin(targets[i].weburl);
-      unsigned long singleStartTime = millis(); int currentHttpCode = http.GET(); unsigned long singleEndTime = millis();
-      http.end();
-      pingTime[i] = singleEndTime - singleStartTime; httpCode[i] = currentHttpCode; updatePingStats(i);
+    if (WiFi.status() == WL_CONNECTED) {
+        for (int i = 0; i < NUM_TARGETS; i++) {
+            if (strcmp(targets[i].weburl, "0") == 0 || strlen(targets[i].weburl) < 10) {
+                httpCode[i] = 0;
+                continue;
+            }
 
-      bool isOnline = (httpCode[i] >= 200 && httpCode[i] < 400);
+            if (millis() - last_check_time[i] < (targets[i].check_interval_seconds * 1000)) {
+                continue;
+            }
+            last_check_time[i] = millis();
 
-      if(isOnline) {
-        failure_count[i] = 0; success_count[i]++;
-        if(confirmed_online_state[i] == false && success_count[i] >= targets[i].recovery_threshold) {
-          confirmed_online_state[i] = true; String message = targets[i].online_message;
-          message.replace("{NAME}", targets[i].server_name); message.replace("{URL}", targets[i].weburl);
-          String logEntry = "on;" + getTime() + "\n";
-          sendNotifications(i, message); sendCustomHttpRequest(targets[i].http_get_url_on);
-          logMessages[i] = logEntry + logMessages[i];
+            HTTPClient http;
+            http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+            http.begin(targets[i].weburl);
+            unsigned long singleStartTime = millis();
+            int currentHttpCode = http.GET();
+            unsigned long singleEndTime = millis();
+            http.end();
+            
+            pingTime[i] = singleEndTime - singleStartTime;
+            httpCode[i] = currentHttpCode;
+            updatePingStats(i);
+
+            bool isOnline = (httpCode[i] >= 200 && httpCode[i] < 400);
+
+            if (isOnline) {
+                failure_count[i] = 0;
+                success_count[i]++;
+                if (confirmed_online_state[i] == false && success_count[i] >= targets[i].recovery_threshold) {
+                    confirmed_online_state[i] = true;
+
+                    String message = targets[i].online_message;
+                    message.replace("{NAME}", targets[i].server_name);
+                    message.replace("{URL}", targets[i].weburl);
+
+                    char timeBuf[30], logEntry[64];
+                    getFormattedTime(timeBuf, sizeof(timeBuf));
+                    snprintf(logEntry, sizeof(logEntry), "on;%s\n", timeBuf);
+
+                    sendNotifications(i, message.c_str());
+                    sendCustomHttpRequest(targets[i].http_get_url_on);
+                    prependToLog(targetLogMessages[i], logEntry, TARGET_LOG_SIZE);
+                }
+            } else {
+                success_count[i] = 0;
+                failure_count[i]++;
+                if (confirmed_online_state[i] == true && failure_count[i] >= targets[i].failure_threshold) {
+                    confirmed_online_state[i] = false;
+                    
+                    String message = targets[i].offline_message;
+                    message.replace("{NAME}", targets[i].server_name);
+                    message.replace("{URL}", targets[i].weburl);
+                    message.replace("{CODE}", String(httpCode[i]));
+
+                    char timeBuf[30], logEntry[64];
+                    getFormattedTime(timeBuf, sizeof(timeBuf));
+                    snprintf(logEntry, sizeof(logEntry), "off;%s\n", timeBuf);
+
+                    sendNotifications(i, message.c_str());
+                    sendCustomHttpRequest(targets[i].http_get_url_off);
+                    prependToLog(targetLogMessages[i], logEntry, TARGET_LOG_SIZE);
+                }
+            }
+            web_log_printf("[Server %d] URL: %s, Status: %d, Ping: %lu ms, Fails: %d, Successes: %d",
+                i + 1, targets[i].weburl, httpCode[i], pingTime[i], failure_count[i], success_count[i]);
         }
-      } else {
-        success_count[i] = 0; failure_count[i]++;
-        if(confirmed_online_state[i] == true && failure_count[i] >= targets[i].failure_threshold) {
-          confirmed_online_state[i] = false; String message = targets[i].offline_message;
-          message.replace("{NAME}", targets[i].server_name); message.replace("{URL}", targets[i].weburl); message.replace("{CODE}", String(httpCode[i]));
-          String logEntry = "off;" + getTime() + "\n";
-          sendNotifications(i, message); sendCustomHttpRequest(targets[i].http_get_url_off);
-          logMessages[i] = logEntry + logMessages[i];
-        }
-      }
-      if (logMessages[i].length() > 1000) {
-          int lastNewline = logMessages[i].lastIndexOf('\n', 900);
-          if (lastNewline != -1) logMessages[i] = logMessages[i].substring(0, lastNewline + 1);
-      }
-      web_log_printf("[Server %d] URL: %s, Status: %d, Ping: %lu ms, Fails: %d, Successes: %d", i+1, targets[i].weburl, httpCode[i], pingTime[i], failure_count[i], success_count[i]);
     }
     delay(100);
 }
