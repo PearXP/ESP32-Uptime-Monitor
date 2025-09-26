@@ -55,7 +55,7 @@ Each firmware version has an internal configuration number. When you update the 
 
 If you ever get locked out (for example, by entering the wrong WiFi credentials), you can perform a manual factory reset.
 
-To do this, press and hold the **'BOOT' button** on your ESP32, then power the device on (or press and release the 'RST'' button while still holding 'BOOT'). Keep the 'BOOT' button held for about 5 seconds after power-on. This will wipe all saved settings and restart the device with its default configuration, ready for a new setup.
+To do this, press and hold the **'BOOT' button** on your ESP32, then power the device on (or press and release the 'RST'' button while still holding 'BOOT'). Keep the 'BOOT' button held for about 10 seconds after power-on. This will wipe all saved settings and restart the device with its default configuration, ready for a new setup.
 
 
 
