@@ -7,6 +7,9 @@ Turn your ESP32 into a simple, powerful, and standalone uptime monitor. This pro
 * **Monitors up to 3 independent servers/websites.**
 * Modern, responsive web interface with live status updates.
 * **Tabbed Dashboard:** A clean, tabbed main page to view the status and separate uptime log for each server.
+* **Real-Time System Bar:** Displays IP address, WiFi RSSI, free heap, CPU frequency, chip model, flash size, and device uptime at a glance.
+* **Accurate Ping Measurement:** Uses a TCP connection test for true network round-trip time — no TLS overhead skewing the results.
+* **Ping History & Charts:** SVG sparkline chart showing the last 30 ping values, plus min/max/avg statistics and an uptime percentage ring per server.
 * **Per-Server Notifications:** Configure different notification settings for each server individually.
 * **Multiple Notification Platforms:**
 
@@ -15,14 +18,18 @@ Turn your ESP32 into a simple, powerful, and standalone uptime monitor. This pro
   * Telegram (via Bot)
 
 * **Custom HTTP Actions:** Trigger custom URLs (for IFTTT, Home Assistant, etc.) for "online" and "offline" events on a per-server basis.
+* **WiFi Network Scan:** Browse available networks directly from the settings page instead of typing the SSID manually.
+* **Manual Check Trigger:** Force an immediate status check for any server with a single click.
 * **OTA Firmware Updates:** Update the firmware easily through the web interface.
-* **Persistent Settings:** All configuration is saved on the ESP32's internal flash memory.
+* **Persistent Settings:** All configuration is saved on the ESP32's internal flash memory (Preferences/NVS).
 
 ## **Getting Started**
 
 ### **1. Flash the Firmware**
 
 Upload the latest .bin file to your ESP32 via the web updater, or flash the source code using the Arduino IDE.
+
+> **Note (source code only):** V13 splits the code across two files. When compiling manually, place both `source-code-V13.ino` and `html.h` inside the **same sketch folder** (e.g. `sketch_mar15a/sketch_mar15a.ino` and `sketch_mar15a/html.h`). The Arduino IDE will not compile correctly if `html.h` is missing.
 
 ### **2. Initial WiFi Setup**
 
@@ -55,7 +62,7 @@ Each firmware version has an internal configuration number. When you update the 
 
 If you ever get locked out (for example, by entering the wrong WiFi credentials), you can perform a manual factory reset.
 
-To do this, press and hold the **'BOOT' button** on your ESP32, then power the device on (or press and release the 'RST'' button while still holding 'BOOT'). Keep the 'BOOT' button held for about 10 seconds after power-on. This will wipe all saved settings and restart the device with its default configuration, ready for a new setup.
+To do this, simply press and hold the **'BOOT' button** on your ESP32 for **5 seconds** while the device is starting. The device will wipe all saved settings and restart with its default configuration, ready for a new setup.
 
 
 
