@@ -64,6 +64,11 @@ If you ever get locked out (for example, by entering the wrong WiFi credentials)
 
 To do this, simply press and hold the **'BOOT' button** on your ESP32 for **5 seconds** while the device is starting. The device will wipe all saved settings and restart with its default configuration, ready for a new setup.
 
+## Contributors
+- [PearXP](https://github.com/PearXP) — Author
+- Claude (Anthropic) — AI-assisted development
+
+
 
 
 
