@@ -1,77 +1,107 @@
-# **ESP32 Uptime Monitor**
+# ESP32 Uptime Monitor
 
-Turn your ESP32 into a simple, powerful, and standalone uptime monitor. This project allows you to check the status of up to 3 independent servers or websites and receive instant, configurable notifications if one of them goes down.
+Turn your ESP32 into a simple, powerful, and standalone uptime monitor. Monitor up to **10 independent servers or websites** and receive instant, configurable notifications if one of them goes down.
 
-## **Features**
+![Dashboard](3.png)
 
-* **Monitors up to 3 independent servers/websites.**
-* Modern, responsive web interface with live status updates.
-* **Tabbed Dashboard:** A clean, tabbed main page to view the status and separate uptime log for each server.
-* **Real-Time System Bar:** Displays IP address, WiFi RSSI, free heap, CPU frequency, chip model, flash size, and device uptime at a glance.
-* **Accurate Ping Measurement:** Uses a TCP connection test for true network round-trip time — no TLS overhead skewing the results.
-* **Ping History & Charts:** SVG sparkline chart showing the last 30 ping values, plus min/max/avg statistics and an uptime percentage ring per server.
-* **Per-Server Notifications:** Configure different notification settings for each server individually.
-* **Multiple Notification Platforms:**
+---
 
-  * Discord (via Webhook)
-  * Ntfy (with priority settings)
-  * Telegram (via Bot)
+## Features
 
-* **Custom HTTP Actions:** Trigger custom URLs (for IFTTT, Home Assistant, etc.) for "online" and "offline" events on a per-server basis.
-* **WiFi Network Scan:** Browse available networks directly from the settings page instead of typing the SSID manually.
-* **Manual Check Trigger:** Force an immediate status check for any server with a single click.
-* **OTA Firmware Updates:** Update the firmware easily through the web interface.
-* **Persistent Settings:** All configuration is saved on the ESP32's internal flash memory (Preferences/NVS).
+- **Monitors up to 10 independent servers/websites**
+- Modern, responsive web interface with live status updates
+- **Tabbed Dashboard** — scrollable tab row with status indicator per server
+- **Real-Time System Bar** — IP address, WiFi RSSI, free heap and device uptime at a glance
+- **Per-Server Event Log** — shows ONLINE/OFFLINE history with date and time per server
+- **Central System Log** — logs boot reason, WiFi events, server state changes and RAM warnings
+- **RAM Monitoring** — automatic warnings in the system log when free heap drops below 150 / 100 / 50 / 30 KB
+- **Accurate Ping Measurement** — TCP connection test for true network round-trip time, no TLS overhead
+- **Ping History & Charts** — SVG sparkline chart with last 20 ping values, plus min/max/avg and uptime ring per server
+- **Multiple Notification Platforms:**
+  - Discord (via Webhook)
+  - Ntfy (with priority settings)
+  - Telegram (via Bot, up to 3 Chat IDs per server)
+- **Custom HTTP Actions** — trigger custom URLs (IFTTT, Home Assistant, etc.) on online/offline events per server
+- **WiFi Network Scan** — browse available networks directly from the settings page
+- **Manual Check Trigger** — force an immediate status check for any server with one click
+- **Port Scanner** — scan ~85 common ports on any host directly from the web interface (with disclaimer)
+- **OTA Firmware Updates** — update firmware through the web interface
+- **Persistent Settings** — all configuration saved in ESP32 flash (Preferences/NVS)
 
-## **Getting Started**
+---
 
-### **1. Flash the Firmware**
+## Getting Started
 
-Upload the latest .bin file to your ESP32 via the web updater, or flash the source code using the Arduino IDE.
+### 1. Flash the Firmware
 
-> **Note (source code only):** V13 splits the code across two files. When compiling manually, place both `source-code-V13.ino` and `html.h` inside the **same sketch folder** (e.g. `sketch_mar15a/sketch_mar15a.ino` and `sketch_mar15a/html.h`). The Arduino IDE will not compile correctly if `html.h` is missing.
+Upload the latest `.bin` file to your ESP32 via the web updater, or flash the source code using the Arduino IDE.
 
-### **2. Initial WiFi Setup**
+> **Note (source code):** Place both `source-code-Vxx.ino` and `html.h` inside the **same sketch folder**. The Arduino IDE will not compile correctly if `html.h` is missing.
 
-On its first boot, or after a reset, you need to create a hotspot with your smartphone so the ESP32 can connect to it.
+### 2. Initial WiFi Setup
 
-* **SSID:** hotspot123321
-* **Password:** pw123456
+On first boot, or after a factory reset, the ESP32 will try to connect to its preconfigured default network. **Create a mobile hotspot on your phone or computer** with the following credentials:
 
-Connect your phone or computer to this network. Then, open your web browser and navigate to http://[ESP32-IP].
+- **SSID:** `hotspot123321`
+- **Password:** `pw123456`
 
-Click the **"Settings"** button, go to the **"General"** tab, and enter your home WiFi credentials. Click **"Save \& Restart"**.
+The ESP32 will connect to this hotspot. Find its IP address in your hotspot's client list or via the Arduino Serial Monitor. Open that IP in your browser, click **Settings**, go to the **WiFi** tab, enter your home WiFi credentials and click **Save & Restart**.
 
-### **3. Main Configuration**
+### 3. Configure Your Servers
 
-The ESP32 will now connect to your home network. You can find its new IP address in your router's client list or by watching the output in the Arduino IDE's Serial Monitor.
+Once connected to your network, find the ESP32's IP in your router's client list or via the Arduino Serial Monitor.
 
-* Navigate to the ESP32's new IP address in your browser.
-* Click **"Settings"** again. You can now configure each server in its respective tab ("Server 1", "Server 2", "Server 3").
-* For each server, you can set the URL to monitor and its unique notification and action settings. An URL set to 0 will be inactive.
+- Open the IP in your browser and click **Settings**
+- Each server has its own tab (S1–S10)
+- Set the URL to monitor, check interval, fail/recover thresholds and notification settings
+- Set the URL to `0` to disable a server slot
 
-## **Important Notes**
+---
 
-### **Settings Reset on Update**
+## Important Notes
 
-Each firmware version has an internal configuration number. When you update the firmware (either via the Arduino IDE or the web interface), the device will detect this change and **automatically reset all saved settings to their defaults**. This is an intentional safety feature to prevent conflicts with outdated settings.
+### Settings Reset on Update
+
+Each firmware version has an internal version number. When you update the firmware, the device detects the version change and **automatically resets all saved settings to defaults**. This prevents conflicts with outdated configurations.
 
 **You will need to re-configure your WiFi and server settings after every firmware update.**
 
-### **Manual Reset**
+### Manual Factory Reset
 
-If you ever get locked out (for example, by entering the wrong WiFi credentials), you can perform a manual factory reset.
+If you get locked out (e.g. wrong WiFi credentials), hold the **BOOT button** for **5 seconds** while the device is starting. The device will wipe all settings and restart with default configuration.
 
-To do this, simply press and hold the **'BOOT' button** on your ESP32 for **5 seconds** while the device is starting. The device will wipe all saved settings and restart with its default configuration, ready for a new setup.
+### Hardware Requirements
+
+- Any ESP32 with **4 MB flash** — no PSRAM required
+- Tested on: ESP32-WROOM-32, M5Atom S3
+
+---
+
+## Port Scanner
+
+The built-in port scanner (found under **Tools → Port Scanner**) scans ~85 common TCP ports on a target host and generates a report of open ports with service names.
+
+> ⚠ **Use responsibly.** Only scan servers you own or have explicit permission to scan. Unauthorized port scanning may be illegal in your country.
+
+---
+
+## File Structure
+
+```
+ESP32-Uptime-Monitor/
+├── src/
+│   ├── source-code-Vxx.ino
+│   └── html.h
+├── bin/
+│   ├── ESP32_webstatusVxx.bin
+│   └── M5AtomS3_webstatusVxx.bin
+├── README.md
+└── LICENSE
+```
+
+---
 
 ## Contributors
+
 - [PearXP](https://github.com/PearXP) — Author
 - Claude (Anthropic) — AI-assisted development
-
-
-
-
-
-
-![index](3.png)
-
